@@ -1,0 +1,283 @@
+---
+title: "Census Analysis - with expanded (~30k) sample"
+author: "Anastasia"
+date: "3/22/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Motivation
+
+Given the rich individual-level time series gym attendance data we work with, it is possible to look for systematic categorical differences in the degree of predictability in different sub-groups of gym goers.
+ 
+We link our gym attendance dataset (including the calculated individual-level AUCs and other behavioral attributes) with census information. The census variables (along with demographic data already captured on the gym goers) will allow us to estimate the demographic and SES profile of each individual and investigate demographic differences in predictability.
+
+## Load Datasets and Show Summary
+
+```{r, message=FALSE, echo = FALSE}
+library(dplyr)
+
+GymAUC = read.csv("gym_demo_auc.csv")
+CensusInfo = read.csv("Census_Data.csv")
+
+# summary(GymAUC)
+# summary(CensusInfo)
+```
+
+## Combine Datasets
+
+```{r, message=FALSE, echo = FALSE}
+library(data.table)
+library(tidyverse)
+
+GymAUC = data.table(GymAUC)
+CensusInfo = data.table(CensusInfo)
+
+merged_data = merge(GymAUC, CensusInfo, by = c("ZipCode"), all.x = TRUE)
+
+# merged_data[,c(1:35)] = merged_data[,c(1:35)][,lapply(.SD, function(x) ifelse(is.na(x), 0, x) )]
+# write.csv(merged_data, file = "GymData_mergedCensus.csv")
+
+# remove missing Zip Codes (none removed)
+merged_data<-merged_data[!is.na(merged_data$ZipCode),]
+# summary(merged_data)
+```
+
+## Income Analysis 
+We find no significant effect of living in a higher income neighborhood (i.e. having a higher liklihood of having a high income) on individual-level AUC, even when controlling for State-level fixed effects. 
+
+```{r, message=FALSE}
+library(glm2)
+library(glmm)
+library(lme4)
+library(survival)
+library(stargazer)
+
+# summary(merged_data$average_household_income)
+nrow(merged_data[merged_data$average_household_income == "-$1",])
+# 603 NA's 
+missing_income_data<-merged_data[is.na(merged_data$average_household_income),]
+
+income_data<-merged_data[!is.na(merged_data$average_household_income),]
+income_data<-income_data[!(income_data$average_household_income == "-$1"),]
+income_data$average_household_income <- as.numeric(gsub('[$,]', '', income_data$average_household_income))
+
+summary(income_data$average_household_income)
+
+# plot
+plot(income_data$average_household_income, income_data$auc_test)
+abline(glm(income_data$auc_test~income_data$population_density_sq_mi), col="red") 
+
+# simple OLS
+incomeAuc <- glm(auc_test ~ average_household_income, data = income_data)
+summary(incomeAuc)
+
+# log OLS
+incomeAucL <- lm(auc_test ~ log(average_household_income), data = income_data)
+summary(incomeAucL)
+
+# OLS with state fixed effects
+incomeAucFE <- glm(auc_test ~ average_household_income + strata(customer_state), data = income_data)
+summary(incomeAucFE)
+
+# log + state FE 
+incomeAucFEL <- lm(auc_test ~ log(average_household_income) + strata(customer_state), data = income_data)
+summary(incomeAucFEL)
+
+stargazer(incomeAuc, incomeAucFE, title="Income Regression Results", font.size = "small", align = TRUE, omit.stat=c("ser"))
+
+stargazer(incomeAucL, title="Log(Income) Regression Results", font.size = "small", align = TRUE, omit.stat=c("ser"), report = "vc*st")
+
+```
+
+## Population Density (Rural/Urban) Analysis 
+We find that increased population density (i.e. the more 'urban' a neighborhood) correlates positively with AUC. We find this using three regressions:
+
+1. Using 6 discrete density class categories to describe how rural/urban the gym location is (with 'super urban' representing neighborhoods in San Francisco, New York City, for example). 47 of the 6975 observations in our data do not have this density class category assigned, and hence this blank category is the one dropped automatically from the data. When we set the category to be dropped to Super Urban, the remaining 5 density class categories show up as being positively correlated with predictability, or AUC (B's ranging from 0.017-0.026, p<0.05-0.01).
+
+2. Using a continuous measure of population density for the zip code in question (as obtained from the census data), we find a negative correlation with population density (the more urban a zip code) and predictability (B=-8.04, p<0.001). 
+
+3. Using a log(population density) for the zip code in question, we find a negative correlation with population density (the more urban a zip code) and predictability (B=-0.005, p<0.001). 
+
+```{r, message=FALSE}
+# summary(merged_data$club_density_class) 
+income_data <- income_data[!(income_data$main_density_class==''),] #removes 3
+income_data <- income_data[!(income_data$main_density_class=='null'),] #removes 306
+
+# GLM with discrete density class categories - "super urban" includes SF, NY, etc. 
+densityAuc <- glm(auc_test ~ main_density_class, data = income_data)
+summary(densityAuc)
+
+# GLM with discrete density class categories - excluding/benchmark "super urban" 
+densityAucL <- lm(auc_test ~ relevel(main_density_class, ref = "Super Urban"), data = income_data)
+summary(densityAucL)
+
+stargazer(densityAucL, title="Gym Density Class Regression Results", font.size = "small", align = TRUE, omit.stat=c("ser"))
+
+# population density
+# summary(income_data$population_density_sq_mi)
+income_data$population_density_sq_mi <- as.numeric(gsub('[,]', '', income_data$population_density_sq_mi))
+summary(income_data$population_density_sq_mi)
+
+# plot
+plot(income_data$population_density_sq_mi, income_data$auc_test)
+abline(glm(income_data$auc_test~income_data$population_density_sq_mi), col="red") 
+
+# simple OLS
+densityAuc2 <- glm(auc_test ~ population_density_sq_mi, data = income_data)
+summary(densityAuc2)
+
+# log OLS
+densityAuc3 <- lm(auc_test ~ log(population_density_sq_mi), data = income_data)
+summary(densityAuc3)
+
+
+stargazer(densityAuc3, title="Log(Population Density) Regression Results", font.size = "small", align = TRUE, omit.stat=c("ser"), report = "vc*st")
+```
+
+## Education Analysis 
+We find no significant effect of the education level of one's neighborhood* on individual-level AUC. 
+
+*We used the discrete categories from the Census data (% of individuals with no diploma, high school, some college, bachelors, and graduate) as a proxy for the education level of the average person in the zip code. This is a very rough proxy for one's own education. 
+
+```{r, message=FALSE}
+income_data$educational_attainment_no_diploma <- as.numeric(gsub('[%]', '', income_data$educational_attainment_no_diploma))
+
+income_data$educational_attainment_high_school <- as.numeric(gsub('[%]', '', income_data$educational_attainment_high_school))
+
+income_data$educational_attainment_some_college <- as.numeric(gsub('[%]', '', income_data$educational_attainment_some_college))
+
+income_data$educational_attainment_bachelors <- as.numeric(gsub('[%]', '', income_data$educational_attainment_bachelors))
+
+income_data$educational_attainment_graduate <- as.numeric(gsub('[%]', '', income_data$educational_attainment_graduate))
+
+# GLM with discrete education categories
+educationAuc <- lm(auc_test ~ educational_attainment_no_diploma + educational_attainment_high_school + educational_attainment_some_college + educational_attainment_bachelors + educational_attainment_graduate, data = income_data)
+summary(educationAuc)
+
+educationAuc2 <- lm(auc_test ~ educational_attainment_high_school + educational_attainment_some_college + educational_attainment_bachelors + educational_attainment_graduate, data = income_data)
+summary(educationAuc2)
+
+income_data$totalEduc <- income_data$educational_attainment_no_diploma + income_data$educational_attainment_high_school + income_data$educational_attainment_some_college + income_data$educational_attainment_bachelors + income_data$educational_attainment_graduate
+
+stargazer(educationAuc2, title="Education Regression Results", font.size = "small", align = TRUE, omit.stat=c("ser"))
+```
+
+## Children Analysis 
+We find no significant effect of living in a neighborhood which has a lot of young children (i.e. having a higher liklihood of having young children oneself) on individual-level AUC. 
+
+*This is a very rough proxy for having children as it is computed from Census data about the neighborhood. 
+
+```{r, message=FALSE}
+
+income_data$hh_marriedcouple_with_own_children_under_18 <- as.numeric(gsub('[,]', '', income_data$hh_marriedcouple_with_own_children_under_18))
+
+income_data$hh_marriedcouple_families <- as.numeric(gsub('[,]', '', income_data$hh_marriedcouple_families))
+
+income_data$fracMarriedKids <- income_data$hh_marriedcouple_with_own_children_under_18 / income_data$hh_marriedcouple_families
+
+income_data$hh_singleparent_with_own_children_under_18 <- as.numeric(gsub('[,]', '', income_data$hh_singleparent_with_own_children_under_18))
+
+income_data$hh_singleparent_families <- as.numeric(gsub('[,]', '', income_data$hh_singleparent_families))
+
+income_data$fracSingleKids <- income_data$hh_singleparent_with_own_children_under_18 / income_data$hh_singleparent_families
+
+# simple OLS
+kidsAuc <- lm(auc_test ~ fracMarriedKids + fracSingleKids, data = income_data)
+summary(kidsAuc)
+
+stargazer(kidsAuc, title="Children Regression Results", font.size = "small", align = TRUE, omit.stat=c("ser"), report = "vc*st")
+```
+
+## Age Analysis 
+We find that age (as reported by individuals to the gym chain) has a very small positive effect on AUC (B=0.001, p<0.001), both on absolute terms as well as relative to  the median age in the neighborhood (i.e. those older than their neighbors are more likely to be predictable).
+
+```{r, message=FALSE}
+
+income_data$median_age <- as.numeric(income_data$median_age)
+
+income_data<-income_data[!(income_data$age < 18),] #792 removed
+income_data<-income_data[!(income_data$age > 99),] #0 removed 
+
+summary(income_data$age)
+summary(income_data$median_age)
+
+# plot 
+plot(income_data$age, income_data$auc_test)
+abline(glm(income_data$auc_test~income_data$age), col="red") 
+
+# simple OLS
+ageAuc <- lm(auc_test ~ age, data = income_data)
+summary(ageAuc)
+
+income_data$ageDiff <- income_data$age - income_data$median_age
+
+ageAuc2 <- lm(auc_test ~ ageDiff, data = income_data)
+summary(ageAuc2)
+
+stargazer(ageAuc, ageAuc2,  title="Age Regression Results", font.size = "small", align = TRUE, omit.stat=c("ser"), report = "vc*st")
+```
+
+## Gender Analysis 
+We find no significant effect of gender (male or female, as noted by the gym chain) on individual-level AUC. There is a small group (250 out of 6975) individuals who did not report their gender to the gym chain, and this group tends to be more predictable (have higher AUCs).
+
+```{r, message=FALSE}
+
+# plot 
+plot(income_data$gender, income_data$auc_test)
+
+# simple OLS
+genderAuc <- lm(auc_test ~ gender, data = income_data)
+summary(genderAuc)
+
+stargazer(genderAuc,  title="Gender Regression Results", font.size = "small", align = TRUE, omit.stat=c("ser"))
+
+# remove Is
+income_data <- income_data[!(income_data$gender=='I'),] #removes 1234
+
+genderAuc2 <- lm(auc_test ~ gender, data = income_data)
+summary(genderAuc2)
+
+stargazer(genderAuc2,  title="Gender Regression Results", font.size = "small", align = TRUE, omit.stat=c("ser"), report = "vc*st")
+
+```
+
+## All-Demographics Analysis 
+When we put all of the demographic variables into our regression, we again find that population density is the only significant predictor of predictability. 
+
+```{r, message=FALSE}
+
+# simple OLS
+AllAuc <- lm(auc_test ~ log(average_household_income) + log(population_density_sq_mi) + educational_attainment_high_school + educational_attainment_some_college + educational_attainment_bachelors + educational_attainment_graduate + fracMarriedKids + fracSingleKids + age +  gender, data = income_data)
+summary(AllAuc)
+
+stargazer(AllAuc,  title="Combined Regression Results", font.size = "small", align = TRUE, omit.stat=c("ser"), report = "vct*")
+
+AllAuc2 <- lm(auc_test ~ log(average_household_income) + log(population_density_sq_mi) + fracMarriedKids + fracSingleKids + age + gender, data = income_data)
+summary(AllAuc2)
+
+AllAuc3 <- lm(auc_test ~ log(average_household_income), data = income_data)
+
+stargazer(AllAuc2,  title="Combined Regression Results", font.size = "small", align = TRUE, omit.stat=c("ser"))
+
+stargazer(AllAuc2, AllAuc3,  title="Combined Regression Results", font.size = "small", align = TRUE, omit.stat=c("ser"), report = "vc*st")
+
+
+write.csv(income_data, file = "Census_Data.csv")
+
+#covariance matrix 
+income_data_variables <- income_data
+variables <- income_data_variables %>% select_if(is.numeric)
+
+variables <- variables %>% select(4:5, 9:14, 24:26)
+variables <- variables %>% select(1, 3:10)
+variables <- variables[!is.na(variables$fracSingleKids),]
+
+library(corpcor)
+C <- cor2pcor(cov(variables))
+
+stargazer(C,  title="Correlation Matrix of Continuous Variables", font.size = "small", align = TRUE, omit.stat=c("ser"))
+```
